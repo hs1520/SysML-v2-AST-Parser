@@ -14,6 +14,9 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
     private final Map<String, AstNode> nodes = new LinkedHashMap<>();
     private final List<AstEdge> edges = new ArrayList<>();
     private final Deque<AstNode> parentStack = new ArrayDeque<>();
+    private final Map<String, String> qualifiedNameToId = new HashMap<>();
+    private final Map<String, List<String>> simpleNameToIds = new HashMap<>();
+    private final Map<String, String> referenceNodeIds = new HashMap<>();
     private String currentQualifiedPrefix = "";
 
     public Map<String, AstNode> getNodes() { return nodes; }
@@ -35,7 +38,7 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
     }
 
     private AstNode registerNode(AstNode node) {
-        nodes.put(node.getId(), node);
+        indexNode(node);
         AstNode parent = parentStack.peek();
         if (parent != null) {
             parent.getChildIds().add(node.getId());
@@ -48,6 +51,87 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                     .build());
         }
         return node;
+    }
+
+    private AstNode registerDetachedNode(AstNode node) {
+        indexNode(node);
+        return node;
+    }
+
+    private void indexNode(AstNode node) {
+        nodes.put(node.getId(), node);
+        if (node.getQualifiedName() != null && !node.getQualifiedName().isBlank()) {
+            qualifiedNameToId.put(node.getQualifiedName(), node.getId());
+        }
+        if (node.getName() != null && !node.getName().isBlank()) {
+            simpleNameToIds.computeIfAbsent(node.getName(), k -> new ArrayList<>()).add(node.getId());
+        }
+    }
+
+    private String resolveOrCreateReferenceNodeId(String reference) {
+        if (reference == null || reference.isBlank()) {
+            return null;
+        }
+        if (qualifiedNameToId.containsKey(reference)) {
+            return qualifiedNameToId.get(reference);
+        }
+        String rootedReference = "root::" + reference;
+        if (qualifiedNameToId.containsKey(rootedReference)) {
+            return qualifiedNameToId.get(rootedReference);
+        }
+        if (!reference.contains("::")) {
+            List<String> candidates = simpleNameToIds.get(reference);
+            if (candidates != null && candidates.size() == 1) {
+                return candidates.get(0);
+            }
+        }
+        return referenceNodeIds.computeIfAbsent(reference, key -> {
+            String simpleName = key.contains("::") ? key.substring(key.lastIndexOf("::") + 2) : key;
+            AstNode refNode = AstNode.builder()
+                    .id(newId())
+                    .type("Reference")
+                    .name(simpleName)
+                    .qualifiedName(key)
+                    .build();
+            refNode.getProperties().put("unresolved", true);
+            registerDetachedNode(refNode);
+            return refNode.getId();
+        });
+    }
+
+    private void addRelationshipEdge(String type, String sourceId, String targetQualifiedName) {
+        String targetId = resolveOrCreateReferenceNodeId(targetQualifiedName);
+        if (sourceId == null || targetId == null) {
+            return;
+        }
+        edges.add(AstEdge.builder()
+                .id(newId())
+                .type(type)
+                .sourceId(sourceId)
+                .targetId(targetId)
+                .build());
+    }
+
+    private String specializationKind(SysMLv2Parser.SpecializationClauseContext clause) {
+        if (clause.SPECIALIZES() != null) {
+            return "specializes";
+        }
+        if (clause.SUBSETS() != null) {
+            return "subsets";
+        }
+        return "redefines";
+    }
+
+    private void applySpecialization(AstNode node, SysMLv2Parser.SpecializationClauseContext clause) {
+        if (clause == null) {
+            return;
+        }
+        List<String> targets = getQualifiedNames(clause.qualifiedName());
+        node.getProperties().put("specializations", targets);
+        node.getProperties().put("specializationKind", specializationKind(clause));
+        for (String target : targets) {
+            addRelationshipEdge("SPECIALIZES", node.getId(), target);
+        }
     }
 
     private String buildQualifiedName(String name) {
@@ -116,6 +200,75 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
     }
 
     @Override
+    public AstNode visitInterfaceDeclaration(SysMLv2Parser.InterfaceDeclarationContext ctx) {
+        String name = ctx.name().getText();
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("Interface")
+                .name(name)
+                .qualifiedName(buildQualifiedName(name))
+                .location(location(ctx))
+                .build();
+        registerNode(node);
+        withParent(node, () -> {
+            for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
+        });
+        return node;
+    }
+
+    @Override
+    public AstNode visitSystemDefDeclaration(SysMLv2Parser.SystemDefDeclarationContext ctx) {
+        String name = ctx.name().getText();
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("SystemDef")
+                .name(name)
+                .qualifiedName(buildQualifiedName(name))
+                .location(location(ctx))
+                .build();
+        registerNode(node);
+        withParent(node, () -> {
+            for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
+        });
+        return node;
+    }
+
+    @Override
+    public AstNode visitPartDefCompactDeclaration(SysMLv2Parser.PartDefCompactDeclarationContext ctx) {
+        String name = ctx.name().getText();
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("PartDef")
+                .name(name)
+                .qualifiedName(buildQualifiedName(name))
+                .location(location(ctx))
+                .build();
+        applySpecialization(node, ctx.specializationClause());
+        registerNode(node);
+        withParent(node, () -> {
+            for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
+        });
+        return node;
+    }
+
+    @Override
+    public AstNode visitDataTypeDeclaration(SysMLv2Parser.DataTypeDeclarationContext ctx) {
+        String name = ctx.name().getText();
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("DataType")
+                .name(name)
+                .qualifiedName(buildQualifiedName(name))
+                .location(location(ctx))
+                .build();
+        registerNode(node);
+        withParent(node, () -> {
+            for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
+        });
+        return node;
+    }
+
+    @Override
     public AstNode visitNamespaceDeclaration(SysMLv2Parser.NamespaceDeclarationContext ctx) {
         String name = ctx.name().getText();
         AstNode node = AstNode.builder()
@@ -142,22 +295,11 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .qualifiedName(buildQualifiedName(name))
                 .location(location(ctx))
                 .build();
-        if (ctx.specializationClause() != null) {
-            node.getProperties().put("specializes", getQualifiedNames(ctx.specializationClause().qualifiedName()));
-        }
+        applySpecialization(node, ctx.specializationClause());
         registerNode(node);
         withParent(node, () -> {
             for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
         });
-        if (ctx.specializationClause() != null) {
-            for (SysMLv2Parser.QualifiedNameContext qn : ctx.specializationClause().qualifiedName()) {
-                edges.add(AstEdge.builder()
-                        .id(newId()).type("SPECIALIZES")
-                        .sourceId(node.getId())
-                        .targetId(qn.getText())
-                        .build());
-            }
-        }
         return node;
     }
 
@@ -171,6 +313,7 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .qualifiedName(buildQualifiedName(name))
                 .location(location(ctx))
                 .build();
+        applySpecialization(node, ctx.specializationClause());
         registerNode(node);
         withParent(node, () -> {
             for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
@@ -235,6 +378,7 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .qualifiedName(buildQualifiedName(name))
                 .location(location(ctx))
                 .build();
+        applySpecialization(node, ctx.specializationClause());
         registerNode(node);
         withParent(node, () -> {
             for (SysMLv2Parser.RequirementBodyContext rb : ctx.requirementBody()) visit(rb);
@@ -301,6 +445,7 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .qualifiedName(buildQualifiedName(name))
                 .location(location(ctx))
                 .build();
+        applySpecialization(node, ctx.specializationClause());
         registerNode(node);
         withParent(node, () -> {
             for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
@@ -324,6 +469,8 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
         if (ctx.typeClause() != null) {
             node.getProperties().put("type", ctx.typeClause().qualifiedName().getText());
             node.getProperties().put("conjugated", ctx.typeClause().TILDE() != null);
+        } else if (ctx.qualifiedName() != null) {
+            node.getProperties().put("type", ctx.qualifiedName().getText());
         }
         registerNode(node);
         if (ctx.member() != null && !ctx.member().isEmpty()) {
@@ -331,6 +478,49 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
             });
         }
+        return node;
+    }
+
+    @Override
+    public AstNode visitDirectedFeatureDeclaration(SysMLv2Parser.DirectedFeatureDeclarationContext ctx) {
+        String name = ctx.name().getText();
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("PortUsage")
+                .name(name)
+                .qualifiedName(buildQualifiedName(name))
+                .location(location(ctx))
+                .build();
+        node.setDirection(ctx.direction().getText());
+        node.getProperties().put("type", ctx.typeClause().qualifiedName().getText());
+        registerNode(node);
+        return node;
+    }
+
+    @Override
+    public AstNode visitStateBehaviorDeclaration(SysMLv2Parser.StateBehaviorDeclarationContext ctx) {
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("StateBehavior")
+                .name("behavior")
+                .location(location(ctx))
+                .build();
+        registerNode(node);
+        withParent(node, () -> visitChildren(ctx));
+        return node;
+    }
+
+    @Override
+    public AstNode visitStateDeclaration(SysMLv2Parser.StateDeclarationContext ctx) {
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("State")
+                .name(ctx.name().getText())
+                .qualifiedName(buildQualifiedName(ctx.name().getText()))
+                .location(location(ctx))
+                .build();
+        registerNode(node);
+        withParent(node, () -> visitChildren(ctx));
         return node;
     }
 
@@ -344,6 +534,7 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .qualifiedName(buildQualifiedName(name))
                 .location(location(ctx))
                 .build();
+        applySpecialization(node, ctx.specializationClause());
         registerNode(node);
         withParent(node, () -> {
             for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
@@ -384,6 +575,7 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .qualifiedName(buildQualifiedName(name))
                 .location(location(ctx))
                 .build();
+        applySpecialization(node, ctx.specializationClause());
         registerNode(node);
         withParent(node, () -> {
             for (SysMLv2Parser.MemberContext m : ctx.member()) visit(m);
@@ -423,12 +615,16 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .build();
         List<SysMLv2Parser.FeaturePathContext> fps = ctx.featurePath();
         if (fps.size() >= 2) {
-            node.getProperties().put("source", fps.get(0).getText());
-            node.getProperties().put("target", fps.get(1).getText());
+            String sourcePath = fps.get(0).getText();
+            String targetPath = fps.get(1).getText();
+            node.getProperties().put("source", sourcePath);
+            node.getProperties().put("target", targetPath);
+            String sourceId = resolveOrCreateReferenceNodeId(sourcePath);
+            String targetId = resolveOrCreateReferenceNodeId(targetPath);
             edges.add(AstEdge.builder()
                     .id(newId()).type("CONNECTS")
-                    .sourceId(fps.get(0).getText())
-                    .targetId(fps.get(1).getText())
+                    .sourceId(sourceId)
+                    .targetId(targetId)
                     .build());
         }
         registerNode(node);
@@ -438,27 +634,34 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
     @Override
     public AstNode visitSatisfyDeclaration(SysMLv2Parser.SatisfyDeclarationContext ctx) {
         List<SysMLv2Parser.QualifiedNameContext> qns = ctx.qualifiedName();
+        String byTarget = ctx.BY() != null && !qns.isEmpty() ? qns.get(qns.size() - 1).getText() : null;
+        int requirementEnd = ctx.BY() != null ? qns.size() - 1 : qns.size();
         AstNode node = AstNode.builder()
                 .id(newId())
                 .type("SatisfyRelationship")
-                .name(qns.isEmpty() ? null : qns.get(0).getText())
+                .name(requirementEnd > 0 ? qns.get(0).getText() : null)
                 .location(location(ctx))
                 .build();
-        if (!qns.isEmpty()) {
-            node.getProperties().put("requirement", qns.get(0).getText());
+        List<String> requirements = new ArrayList<>();
+        for (int i = 0; i < requirementEnd; i++) {
+            requirements.add(qns.get(i).getText());
         }
-        if (qns.size() > 1) {
-            node.getProperties().put("satisfiedBy", qns.get(1).getText());
+        if (!requirements.isEmpty()) {
+            node.getProperties().put("requirements", requirements);
+            node.getProperties().put("requirement", requirements.get(0));
+        }
+        if (byTarget != null) {
+            node.getProperties().put("by", byTarget);
         }
         registerNode(node);
-        if (!qns.isEmpty()) {
+        if (!requirements.isEmpty()) {
             AstNode parent = parentStack.peek();
-            if (parent != null) {
-                edges.add(AstEdge.builder()
-                        .id(newId()).type("SATISFIES")
-                        .sourceId(parent.getId())
-                        .targetId(qns.get(0).getText())
-                        .build());
+            String sourceId = parent != null ? parent.getId() : node.getId();
+            if (byTarget != null) {
+                sourceId = resolveOrCreateReferenceNodeId(byTarget);
+            }
+            for (String requirement : requirements) {
+                addRelationshipEdge("SATISFIES", sourceId, requirement);
             }
         }
         return node;
@@ -477,11 +680,7 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
         registerNode(node);
         AstNode parent = parentStack.peek();
         if (parent != null) {
-            edges.add(AstEdge.builder()
-                    .id(newId()).type("REFINES")
-                    .sourceId(parent.getId())
-                    .targetId(target)
-                    .build());
+            addRelationshipEdge("REFINES", parent.getId(), target);
         }
         return node;
     }
@@ -515,11 +714,9 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
             node.setVisibility(ctx.visibility().getText());
         }
         registerNode(node);
-        edges.add(AstEdge.builder()
-                .id(newId()).type("IMPORTS")
-                .sourceId(node.getId())
-                .targetId(importPath)
-                .build());
+        AstNode parent = parentStack.peek();
+        String sourceId = parent != null ? parent.getId() : node.getId();
+        addRelationshipEdge("IMPORTS", sourceId, importPath);
         return node;
     }
 
@@ -564,7 +761,10 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
                 .type("Documentation")
                 .location(location(ctx))
                 .build();
-        node.getProperties().put("text", ctx.BLOCK_COMMENT_TEXT().getText());
+        String text = ctx.BLOCK_COMMENT_TEXT() != null
+                ? ctx.BLOCK_COMMENT_TEXT().getText()
+                : (ctx.STRING_LITERAL() != null ? ctx.STRING_LITERAL().getText() : "");
+        node.getProperties().put("text", text);
         registerNode(node);
         return node;
     }
@@ -590,7 +790,23 @@ public class SysmlAstBuilderVisitor extends SysMLv2BaseVisitor<AstNode> {
 
     @Override
     public AstNode visitSpecializationDeclaration(SysMLv2Parser.SpecializationDeclarationContext ctx) {
-        return visitChildren(ctx);
+        AstNode node = AstNode.builder()
+                .id(newId())
+                .type("Generalization")
+                .location(location(ctx))
+                .build();
+        List<String> targets = getQualifiedNames(ctx.specializationClause().qualifiedName());
+        node.getProperties().put("general", targets);
+        node.getProperties().put("specializationKind", specializationKind(ctx.specializationClause()));
+        registerNode(node);
+
+        AstNode parent = parentStack.peek();
+        if (parent != null) {
+            for (String target : targets) {
+                addRelationshipEdge("SPECIALIZES", parent.getId(), target);
+            }
+        }
+        return node;
     }
 
     private List<String> getQualifiedNames(List<SysMLv2Parser.QualifiedNameContext> qns) {

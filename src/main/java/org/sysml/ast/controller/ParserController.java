@@ -22,11 +22,8 @@ public class ParserController {
 
     @PostMapping("/parse")
     public ResponseEntity<ParseResult> parseText(@RequestBody ParseRequest request) {
-        if (request.getContent() == null || request.getContent().isBlank()) {
-            ParseResult result = ParseResult.builder()
-                    .success(false)
-                    .build();
-            return ResponseEntity.badRequest().body(result);
+        if (request == null || isBlank(request.getContent())) {
+            return ResponseEntity.badRequest().body(buildBadRequestResult());
         }
         ParseResult result = parserService.parse(request.getContent(), request.getFilename());
         return ResponseEntity.ok(result);
@@ -34,7 +31,13 @@ public class ParserController {
 
     @PostMapping("/parse/file")
     public ResponseEntity<ParseResult> parseFile(@RequestParam("file") MultipartFile file) throws IOException {
+        if (file == null || file.isEmpty()) {
+            return ResponseEntity.badRequest().body(buildBadRequestResult());
+        }
         String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+        if (isBlank(content)) {
+            return ResponseEntity.badRequest().body(buildBadRequestResult());
+        }
         ParseResult result = parserService.parse(content, file.getOriginalFilename());
         return ResponseEntity.ok(result);
     }
@@ -68,12 +71,17 @@ public class ParserController {
         nodeTypes.put("AttributeUsage", "An attribute usage");
         nodeTypes.put("ActionDef", "An action definition");
         nodeTypes.put("ActionUsage", "An action usage");
+        nodeTypes.put("ComponentUsage", "A component usage");
         nodeTypes.put("Connector", "A connector");
         nodeTypes.put("SatisfyRelationship", "A satisfy relationship");
         nodeTypes.put("RefineRelationship", "A refine relationship");
+        nodeTypes.put("Generalization", "A generalization relationship");
         nodeTypes.put("Constraint", "A constraint");
         nodeTypes.put("Import", "An import declaration");
+        nodeTypes.put("Dependency", "A dependency declaration");
         nodeTypes.put("Comment", "A comment");
+        nodeTypes.put("Documentation", "A documentation declaration");
+        nodeTypes.put("MetadataAnnotation", "A metadata annotation");
         schema.put("nodeTypes", nodeTypes);
 
         Map<String, Object> edgeTypes = new LinkedHashMap<>();
@@ -86,5 +94,15 @@ public class ParserController {
         schema.put("edgeTypes", edgeTypes);
 
         return ResponseEntity.ok(schema);
+    }
+
+    private ParseResult buildBadRequestResult() {
+        return ParseResult.builder()
+                .success(false)
+                .build();
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

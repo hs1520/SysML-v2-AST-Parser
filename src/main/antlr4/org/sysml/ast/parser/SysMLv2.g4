@@ -15,6 +15,10 @@ member
 memberElement
     : packageDeclaration
     | namespaceDeclaration
+    | interfaceDeclaration
+    | systemDefDeclaration
+    | partDefCompactDeclaration
+    | dataTypeDeclaration
     | partDefDeclaration
     | blockDeclaration
     | partUsageDeclaration
@@ -35,6 +39,8 @@ memberElement
     | commentDeclaration
     | docDeclaration
     | metadataDeclaration
+    | stateBehaviorDeclaration
+    | directedFeatureDeclaration
     | constraintDeclaration
     | specializationDeclaration
     ;
@@ -47,6 +53,22 @@ visibility
 
 packageDeclaration
     : PACKAGE name LBRACE member* RBRACE
+    ;
+
+interfaceDeclaration
+    : INTERFACE name LBRACE member* RBRACE
+    ;
+
+systemDefDeclaration
+    : SYSTEMDEF name LBRACE member* RBRACE
+    ;
+
+partDefCompactDeclaration
+    : PARTDEF name specializationClause? LBRACE member* RBRACE
+    ;
+
+dataTypeDeclaration
+    : DATATYPE name LBRACE member* RBRACE
     ;
 
 namespaceDeclaration
@@ -101,6 +123,7 @@ portDefDeclaration
 portUsageDeclaration
     : direction? PORT name typeClause? SEMI
     | direction? PORT name typeClause? LBRACE member* RBRACE
+    | PORT name COLON direction qualifiedName SEMI
     ;
 
 attributeDefDeclaration
@@ -112,12 +135,16 @@ attributeUsageDeclaration
     ;
 
 actionDefDeclaration
-    : ACTION DEF name specializationClause? LBRACE member* RBRACE
+    : ACTION DEF name actionSignature? specializationClause? LBRACE member* RBRACE
     ;
 
 actionUsageDeclaration
-    : ACTION name typeClause? SEMI
-    | ACTION name typeClause? LBRACE member* RBRACE
+    : ACTION name actionSignature? typeClause? SEMI
+    | ACTION name actionSignature? typeClause? LBRACE member* RBRACE
+    ;
+
+actionSignature
+    : LPAREN RPAREN
     ;
 
 connectorDeclaration
@@ -130,7 +157,7 @@ featurePath
     ;
 
 satisfyDeclaration
-    : SATISFY qualifiedName (BY qualifiedName)? SEMI
+    : SATISFY qualifiedName (COMMA qualifiedName)* (BY qualifiedName)? SEMI
     ;
 
 refineDeclaration
@@ -165,7 +192,35 @@ commentText
     ;
 
 docDeclaration
-    : DOC BLOCK_COMMENT_TEXT
+    : DOC (BLOCK_COMMENT_TEXT | STRING_LITERAL) SEMI?
+    ;
+
+directedFeatureDeclaration
+    : direction name typeClause SEMI
+    ;
+
+stateBehaviorDeclaration
+    : STATE BEHAVIOR LBRACE stateDeclaration* RBRACE
+    ;
+
+stateDeclaration
+    : STATE name LBRACE stateStatement* RBRACE
+    ;
+
+stateStatement
+    : ACCEPT name SEMI
+    | DO invocation SEMI
+    | SEND name SEMI
+    | IF expression THEN conditionalAction SEMI
+    ;
+
+invocation
+    : name LPAREN argumentList? RPAREN
+    ;
+
+conditionalAction
+    : SEND name
+    | invocation
     ;
 
 metadataDeclaration
@@ -195,7 +250,11 @@ direction
     ;
 
 qualifiedName
-    : name (DOUBLE_COLON name)*
+    : name (DOUBLE_COLON name)* genericArguments?
+    ;
+
+genericArguments
+    : LT qualifiedName (COMMA qualifiedName)* GT
     ;
 
 qualifiedNameWithStar
@@ -229,10 +288,19 @@ expression
     ;
 
 primary
-    : literal
+    : literal unitSuffix?
     | qualifiedName
     | LPAREN expression RPAREN
     | name LPAREN argumentList? RPAREN
+    ;
+
+unitSuffix
+    : LBRACKET unitExpression RBRACKET
+    ;
+
+unitExpression
+    : name (SLASH name)?
+    | PERCENT
     ;
 
 argumentList
@@ -267,6 +335,10 @@ ATTRIBUTE   : 'attribute' ;
 ACTION      : 'action' ;
 CONNECT     : 'connect' ;
 CONNECTOR   : 'connector' ;
+INTERFACE   : 'interface' ;
+SYSTEMDEF   : 'systemdef' ;
+PARTDEF     : 'partdef' ;
+DATATYPE    : 'datatype' ;
 SATISFY     : 'satisfy' ;
 REFINE      : 'refine' ;
 SPECIALIZES : 'specializes' ;
@@ -285,6 +357,13 @@ BY          : 'by' ;
 ABOUT       : 'about' ;
 REF         : 'ref' ;
 COMPONENT   : 'component' ;
+STATE       : 'state' ;
+BEHAVIOR    : 'behavior' ;
+ACCEPT      : 'accept' ;
+DO          : 'do' ;
+SEND        : 'send' ;
+IF          : 'if' ;
+THEN        : 'then' ;
 IN          : 'in' ;
 OUT         : 'out' ;
 INOUT       : 'inout' ;
@@ -320,6 +399,7 @@ NEQ         : '!=' ;
 LT          : '<' ;
 GT          : '>' ;
 HASH        : '#' ;
+PERCENT     : '%' ;
 TILDE       : '~' ;
 DOUBLE_COLON : '::' ;
 COLON_GT    : ':>' ;
