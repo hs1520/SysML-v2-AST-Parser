@@ -118,7 +118,7 @@
 Multipart form upload:
 
 ```
-curl -X POST http://localhost:8080/api/v1/parse/file \
+curl -X POST http://localhost:9080/api/v1/parse/file \
      -F "file=@model.sysml"
 ```
 
@@ -288,7 +288,7 @@ docker run --rm -v $(pwd):/data sysml-ast-parser \
 ```python
 import requests
 
-BASE = "http://localhost:8080/api/v1"
+BASE = "http://localhost:9080/api/v1"
 
 def parse_sysml(text: str, filename: str = "model.sysml") -> dict:
     resp = requests.post(f"{BASE}/parse",

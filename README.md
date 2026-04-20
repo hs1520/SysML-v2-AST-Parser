@@ -19,7 +19,7 @@ A production-ready Java service that parses SysML v2 text into a structured JSON
 docker compose up
 ```
 
-The service will be available at `http://localhost:8080`.
+The service will be available at `http://localhost:9080`.
 
 ### Run locally
 
@@ -138,7 +138,7 @@ Map the JSON AST to `SysMLModel` as follows:
 ```python
 import requests, json
 
-resp = requests.post("http://localhost:8080/api/v1/parse",
+resp = requests.post("http://localhost:9080/api/v1/parse",
                      json={"content": sysml_text, "filename": "model.sysml"})
 ast = resp.json()
 
@@ -166,7 +166,7 @@ mvn test             # run tests only
 
 ```bash
 docker build -t sysml-ast-parser .
-docker run -p 8080:8080 sysml-ast-parser
+docker run -p 9080:9080 sysml-ast-parser
 ```
 
 ## Project layout
